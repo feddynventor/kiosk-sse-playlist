@@ -4,19 +4,14 @@ import { Playlist, Record } from './idb.js';
 const videos: Record[] = [
     {
         name: "video1",
-        url: 'http://10.0.0.35:8001/samples/video11.mp4',
+        url: 'http://127.0.0.1:8001/samples/video11.mp4',
         id: '1'
     },
     {
         name: "video2",
-        url: 'http://10.0.0.35:8001/samples/video12.mp4',
+        url: 'http://127.0.0.1:8001/samples/video12.mp4',
         id: '2'
     },
-    // {
-    //     name: "video_enorme",
-    //     url: 'http://127.0.0.1:8001/samples/big.mp4',
-    //     id: '3'
-    // },
     {
         name: "video4",
         url: 'http://127.0.0.1:8001/samples/video13.mp4',
@@ -25,14 +20,19 @@ const videos: Record[] = [
 ]
 
 
-const p = new Playlist('videos', ['name', 'url'])
-
-videos.forEach(video => {
-//    p.cache(video as Record)
-//    .then( () => console.log('Cached', video.id) )
-//    .then( () => p.load(video.id) )
-//    .then( displayVideo )
-//    .catch( e => console.error(e) )
+const p = new Playlist('videos', () => {
+    videos.forEach(async video => {
+        const blob = await p.load(video.id)
+        if (blob) {
+            displayVideo(blob)
+        } else {
+            p.cache(video)
+            .then(() => p.load(video.id))
+            .then(blob => {
+                if (blob) displayVideo(blob)
+            })
+        }
+    })
 })
 
 function displayVideo(blob: Blob) {

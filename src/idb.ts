@@ -1,7 +1,7 @@
 
 interface Idb {
   cache: (obj: Record) => Promise<void>
-  load: (id: string) => Promise<Blob>
+  load: (id: string) => Promise<Blob | null>
 }
 
 export interface Record {
@@ -11,44 +11,48 @@ export interface Record {
   blob?: Blob
 }
 
+declare global {
+  interface Window {
+    mozIndexedDB:any;
+    webkitIndexedDB:any;
+  }
+}
+var idb = window.indexedDB ||      // Use the standard DB API
+          window.mozIndexedDB ||   // Or Firefox's early version of it
+          window.webkitIndexedDB;  // Or Chrome's early version
+
 
 export class Playlist implements Idb {
-  dbName: string;
+  dbOSName: string;
   dbInstance: IDBDatabase | null;
 
-  constructor(name: string, fields: string[], callback?: Function) {
-    this.dbName = name;
+  constructor(name: string, callback?: Function) {
+    this.dbOSName = name;
     this.dbInstance = null;
-    console.log(arguments)
 
-    const request = window.indexedDB.open(name, 1);
-    request.addEventListener('error', (e)=>{console.error("FATAL",e)});
+    const request: IDBOpenDBRequest = idb.open(name);
+    request.addEventListener('error', ()=>{console.error("FATAL",request)});
 
-    request.addEventListener('success', (() => {
+    request.onsuccess = () => {
       console.log('Database opened successfully');
       this.dbInstance = request.result;
       console.log(request.result)
 
       if (callback) callback()
-    }).bind(this));
+    };
 
-    request.addEventListener('upgradeneeded', (e: Event) => {
+    request.onupgradeneeded = (e: Event) => {
       if (!e.target) return;
       console.log("Upgrade needed")
-      const db = (e.target as IDBRequest).result
+      const db: IDBDatabase = (e.target as IDBRequest).result
       const objectStore: IDBObjectStore = db.createObjectStore(name, { keyPath: 'id' });
       
       // new obj must contain url and id
       objectStore.createIndex("id_idx", "id", { unique: true });
       objectStore.createIndex("url_idx", "url", { unique: false });
 
-      console.log("Creating indexes", fields)
-      fields.forEach( field => {
-        objectStore.createIndex(field+"_idx", field, { unique: false });
-      });
-
       console.log('Database setup complete');
-    });
+    };
   }
 
   async cache(obj: Record): Promise<void> {
@@ -56,32 +60,44 @@ export class Playlist implements Idb {
     .then(response => response.status==200 ? response.blob() : Promise.reject("Not found"))
     .then(blob => {
       if (!this.dbInstance) return Promise.reject('Database not initialized');
-      const objectStore = this.dbInstance.transaction(this.dbName, 'readwrite').objectStore(this.dbName);
+      const objectStore = this.dbInstance.transaction(this.dbOSName, 'readwrite').objectStore(this.dbOSName);
       // Add the record to IDB
       const request = objectStore.add({
         ...obj,
         blob
       });
 
-      request.addEventListener('success', () => console.log('Record addition attempt finished for', obj.id));
-      request.addEventListener('error', Promise.reject);
+      request.onsuccess = () => { return Promise.resolve() }
+      request.onerror = (e) => {
+        if ((e.target as IDBRequest).error?.code == 0) {
+          console.log('Already cached', obj.id)
+          return Promise.resolve()
+        } else {
+          console.error('Error', e)
+          return Promise.reject()
+        }
+      }
     })
   }
 
-  async load(id: string): Promise<Blob> {
+  async load(id: string): Promise<Blob | null> {
     if (!this.dbInstance) return Promise.reject()
-    const objectStore = this.dbInstance.transaction(this.dbName).objectStore(this.dbName);
+    const objectStore = this.dbInstance.transaction(this.dbOSName).objectStore(this.dbOSName);
     const request = objectStore.get(id);
 
     return new Promise((resolve, reject) => {
-          request.addEventListener('success', () => {
+          request.onsuccess = () => {
             if (request.result) {
               console.log('Match found', request.result.id);
               resolve(request.result.blob);
             } else {
-              reject('No match found');
+              resolve(null);
             }
-          });
+          };
+          request.onerror = () => {
+            console.error(request.error);
+            reject(request.error);
+          }
     });
   }
 }
