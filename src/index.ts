@@ -21,6 +21,8 @@ const videos: Record[] = [
 
 
 const p = new Playlist('videos', () => {
+    p.list().then(console.log)
+    
     videos.forEach(async video => {
         const blob = await p.load(video.id)
         if (blob) {

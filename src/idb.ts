@@ -2,6 +2,7 @@
 interface Idb {
   cache: (obj: Record) => Promise<void>
   load: (id: string) => Promise<Blob | null>
+  list: () => Promise<Record[]>
 }
 
 export interface Record {
@@ -93,6 +94,22 @@ export class Playlist implements Idb {
             } else {
               resolve(null);
             }
+          };
+          request.onerror = () => {
+            console.error(request.error);
+            reject(request.error);
+          }
+    });
+  }
+
+  async list(): Promise<Record[]> {
+    if (!this.dbInstance) return Promise.reject()
+    const objectStore = this.dbInstance.transaction(this.dbOSName).objectStore(this.dbOSName);
+    const request = objectStore.getAll();
+
+    return new Promise((resolve, reject) => {
+          request.onsuccess = () => {
+            resolve(request.result);
           };
           request.onerror = () => {
             console.error(request.error);
