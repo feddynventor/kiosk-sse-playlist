@@ -5,11 +5,12 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "nodemon --exec tsc -e ts"
+    "dev": "tsc --watch"
   },
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "eslint": "^9.4.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5"
   }
