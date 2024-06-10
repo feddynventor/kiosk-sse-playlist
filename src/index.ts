@@ -1,4 +1,9 @@
 import { Playlist, Record } from './idb.js';
+import Events from './sse.js';
+
+new Events('http://127.0.0.1:8000/events', (data: string) => {
+    console.log(data)
+})
 
 // sample data
 const videos: Record[] = [
