@@ -1,9 +1,7 @@
 import { Playlist, Record } from './idb.js';
 import Events from './sse.js';
 
-new Events('http://127.0.0.1:8000/events', (data: string) => {
-    console.log(data)
-})
+const main_playlist = new Playlist('videos')
 
 // sample data
 const videos: Record[] = [
@@ -23,33 +21,33 @@ const videos: Record[] = [
         id: '4'
     }
 ]
-
-
-const p = new Playlist('videos', () => {
-    p.list().then(console.log)
-    
-    videos.forEach(async video => {
-        const blob = await p.load(video.id)
-        if (blob) {
-            displayVideo(blob)
-        } else {
-            p.cache(video)
-            .then(() => p.load(video.id))
-            .then(blob => {
-                if (blob) displayVideo(blob)
-            })
-        }
-    })
+const events = new Events('http://127.0.0.1:8000/events', (data: string) => {
+    videos.push(JSON.parse(data) as Record)
 })
 
-function displayVideo(blob: Blob) {
-    const video = document.createElement('video');
-    video.controls = true;
-    video.autoplay = true;
-    const source1 = document.createElement('source');
-    source1.src = URL.createObjectURL(blob);
-    source1.type = 'video/mp4';
-    video.appendChild(source1);
+let index = 0;
+const elem = document.createElement('video');
+elem.autoplay = true;
+elem.controls = true;
 
-    document.querySelector('body')?.appendChild(video);
+window.onload = async () => {
+    console.log('onload', videos[0])
+    elem.src = await getVideoBlob(videos[0]).then(URL.createObjectURL)
+    elem.play()
+}
+
+elem.onended = async () => {
+    index++;
+    elem.src = await getVideoBlob(videos[index]).then(URL.createObjectURL)
+    elem.play()
+}
+
+window.document.body.appendChild(elem)
+
+async function getVideoBlob(video: Record): Promise<Blob> {
+    const blob = await main_playlist.load(video.id)
+    if (blob) return Promise.resolve( blob )
+    else return main_playlist.cache(video)
+        .then(() => main_playlist.load(video.id))
+        .then(blob => blob ? Promise.resolve(blob) : Promise.reject('Blob not found'))
 }
