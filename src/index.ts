@@ -1,53 +1,64 @@
 import { Playlist, Record } from './idb.js';
-import Events from './sse.js';
+import { totalFetch } from './api.js';
+import { UpdateEvent, update } from './event.js';
 
 const main_playlist = new Playlist('videos')
 
-// sample data
-const videos: Record[] = [
-    {
-        name: "video1",
-        url: 'http://127.0.0.1:8001/samples/video11.mp4',
-        id: '1'
-    },
-    {
-        name: "video2",
-        url: 'http://127.0.0.1:8001/samples/video12.mp4',
-        id: '2'
-    },
-    {
-        name: "video4",
-        url: 'http://127.0.0.1:8001/samples/video13.mp4',
-        id: '4'
-    }
-]
-const events = new Events('http://127.0.0.1:8000/events', (data: string) => {
-    videos.push(JSON.parse(data) as Record)
-})
+interface CMSEvent {
+    type: "update"|"delete"|"insert",
+    payload: UpdateEvent
+}
 
-let index = 0;
+const events = new EventSource('http://192.168.0.238:8989/events', { withCredentials: true })
+events.onmessage = (ev: MessageEvent) => {
+    const event = JSON.parse(ev.data as string) as CMSEvent
+    if (event.type == "update") return update(event.payload)
+}
+
 const elem = document.createElement('video');
 elem.autoplay = true;
 elem.controls = true;
 
 window.onload = async () => {
-    console.log('onload', videos[0])
-    elem.src = await getVideoBlob(videos[0]).then(URL.createObjectURL)
+    // main_playlist.list().then(console.log)
+    // return
+    const first = await goNext(main_playlist)
+    console.log('onload', first)
+    // REVIEW TRANSACTIONS MATTER
+    if (!first) await Promise
+        .all( (await totalFetch()).map(function(v: Record) {  //arrow function cancels bindings
+            main_playlist.cache(v)
+        }) )
+        .then( async function() {
+            const v = await main_playlist.getCurrent()
+            console.log(v?.title)
+            if (!v || !v.blob) return
+            elem.src = URL.createObjectURL(v.blob)
+        })
+    //else elem.src = URL.createObjectURL(first.blob)
+
+    elem.setAttribute("custom", "asa")
     elem.play()
+}
+
+elem.onplay = async (e: Event) => {
+    console.log("STARTED", await main_playlist.getCurrent())
 }
 
 elem.onended = async () => {
-    index++;
-    elem.src = await getVideoBlob(videos[index]).then(URL.createObjectURL)
+    // elem.src = await goNext(main_playlist).then(v=>v.blob).then(URL.createObjectURL)
     elem.play()
 }
 
-window.document.body.appendChild(elem)
-
-async function getVideoBlob(video: Record): Promise<Blob> {
-    const blob = await main_playlist.load(video.id)
-    if (blob) return Promise.resolve( blob )
-    else return main_playlist.cache(video)
-        .then(() => main_playlist.load(video.id))
-        .then(blob => blob ? Promise.resolve(blob) : Promise.reject('Blob not found'))
+const goNext = async (p: Playlist, n?: number): Promise<Record & {blob: Blob} | null> => {
+    if (n==3) return Promise.resolve(null)
+    console.log("retry",n)
+    const video = await p.loadNext()
+    if (video && video.blob && (video.status||true)) return video as Record & {blob: Blob}
+    else return new Promise((resolve, reject)=>{
+        setTimeout( ()=>{ resolve(goNext(p, n===undefined?0:++n)) }, 500 )
+    })
 }
+
+
+window.document.body.appendChild(elem)
