@@ -2,7 +2,7 @@
 interface Idb {
   sequence: number
   cache: (obj: Record & {sequence?:number}) => Promise<void>
-  load: (id: string) => Promise<Record | null>
+  get: (id: string) => Promise<Record | null>
   loadNext: (sequence?: number) => Promise<Record | null>
   getCurrent: () => Promise<Record | null>
   list: () => Promise<Record[]>
@@ -38,7 +38,7 @@ export class Playlist implements Idb {
   constructor(name: string, callback?: Function) {
     this.dbOSName = name;
     this.dbInstance = null;
-    this.sequence = -1;
+    this.sequence = 0;
 
     const request: IDBOpenDBRequest = idb.open(name);
     request.addEventListener('error', ()=>{console.error("FATAL",request)});
@@ -65,7 +65,7 @@ export class Playlist implements Idb {
   }
 
   async cache( obj: Record & {sequence?:number} ): Promise<void> {
-    return fetch(obj.url)
+    return fetch(obj.url, {mode: "cors"})
     .then(response => response.status==200 ? response.blob() : Promise.reject("Not found"))
     .then( async blob => {
       if (!this.dbInstance) return Promise.reject('Database not initialized');
@@ -75,14 +75,17 @@ export class Playlist implements Idb {
       const request = objectStore.add({
         ...obj,
         status: obj.status || false,
-        sequence: obj.sequence || totalItems+1,
+        sequence: obj.sequence || totalItems,
         blob
       });
 
-      request.onsuccess = Promise.resolve
+      request.onsuccess = (e) => {
+        console.log(`New Cached ID:${obj.id} SEQ:${obj.sequence}`)
+        return Promise.resolve()
+      }
       request.onerror = (e) => {
         if ((e.target as IDBRequest).error?.code == 0) {
-          console.log('Already cached', obj.id)
+          console.log(`Already Cached ID:${obj.id} SEQ:${obj.sequence}`)
           return Promise.resolve()
         } else {
           console.error('Error', e)
@@ -92,15 +95,15 @@ export class Playlist implements Idb {
     })
   }
 
-  async load(id: string): Promise<Record | null> {
-    if (!this.dbInstance) return Promise.reject()
+  async get(id: string): Promise<Record | null> {
+    if (!this.dbInstance) return Promise.resolve(null)
     const objectStore = this.dbInstance.transaction(this.dbOSName).objectStore(this.dbOSName);
     const request = objectStore.get(id);
 
     return new Promise((resolve, reject) => {
           request.onsuccess = () => {
             if (request.result) {
-              console.log('Match found', request.result.id);
+              console.log(`Match found ID:${request.result.id} SEQ:${request.result.sequence}`)
               resolve(request.result as Record);
             } else {
               resolve(null);
@@ -114,51 +117,25 @@ export class Playlist implements Idb {
   }
 
   async loadNext(sequence?: number): Promise<Record | null> {
-    if (!this.dbInstance) return Promise.reject()
+    if (!this.dbInstance) return Promise.resolve(null)
     // Get by sequence number
-    this.sequence = sequence || ( (await this.totalItems() == this.sequence) ? 0 : this.sequence+1 )  //STUDY must be before transaction
-    console.log("IDB seeking", this.sequence)
-    
-    const objectStore = this.dbInstance.transaction(this.dbOSName).objectStore(this.dbOSName);
-    const request = objectStore.openCursor( IDBKeyRange.only(this.sequence) )
-
-    return new Promise((resolve, reject) => {
-          request.onsuccess = () => {
-            if (request.result) {
-              console.log('Next vid found', request.result.value.id);
-              resolve(request.result.value as Record);
-            } else {
-              resolve(null);
-            }
-          };
-          request.onerror = () => {
-            console.error(request.error);
-            reject(request.error);
-          }
-    });
+    return this.list()
+    .then( v => {
+      console.log("Loading next at", this.sequence)
+      const el = v[sequence || this.sequence]
+      if (!!!sequence && el !== null) this.sequence==v.length ? this.sequence=0 : this.sequence++
+      return el
+    })
   }
 
   async getCurrent(): Promise<Record | null> {
-    if (!this.dbInstance) return Promise.reject()
-    const objectStore = this.dbInstance.transaction(this.dbOSName).objectStore(this.dbOSName);
     // Get by sequence number
-    console.log("IDB giving current", this.sequence)
-    const request = objectStore.openCursor( IDBKeyRange.only(this.sequence==-1 ? 0 : this.sequence) )  //-1 or 0 is equal state
-
-    return new Promise((resolve, reject) => {
-          request.onsuccess = () => {
-            if (request.result) {
-              console.log('Current vid found', request.result.value.id);
-              resolve(request.result.value as Record);
-            } else {
-              resolve(null);
-            }
-          };
-          request.onerror = () => {
-            console.error(request.error);
-            reject(request.error);
-          }
-    });
+    return this.list()
+    .then( v => {
+      console.log("Currently at index", this.sequence-1)
+      return v[this.sequence-1]
+    })
+    .catch( ()=>Promise.resolve(null) )
   }
 
   async list(): Promise<Record[]> {

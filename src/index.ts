@@ -16,28 +16,29 @@ events.onmessage = (ev: MessageEvent) => {
 }
 
 const elem = document.createElement('video');
+const metadata = document.createElement('h4')
 elem.autoplay = true;
 elem.controls = true;
 
 window.onload = async () => {
-    // main_playlist.list().then(console.log)
-    // return
-    const first = await goNext(main_playlist)
+    let first = await seekNext(main_playlist)
     console.log('onload', first)
-    // REVIEW TRANSACTIONS MATTER
-    if (!first) await Promise
-        .all( (await totalFetch()).map(function(v: Record) {  //arrow function cancels bindings
-            main_playlist.cache(v)
-        }) )
-        .then( async function() {
-            const v = await main_playlist.getCurrent()
-            console.log(v?.title)
-            if (!v || !v.blob) return
-            elem.src = URL.createObjectURL(v.blob)
+    if (!first) first = await Promise
+        .all( (await totalFetch())
+            .map(function(v: Record, i: number) {  //arrow function cancels bindings
+                return main_playlist.cache({...v, sequence: i})  //override sequence number with one from server
+            })
+        )
+        .then( function() {
+            return seekNext(main_playlist, 0)
         })
-    //else elem.src = URL.createObjectURL(first.blob)
 
-    elem.setAttribute("custom", "asa")
+    if (!first) return
+    
+    elem.src = URL.createObjectURL(first.blob)
+    metadata.innerHTML = JSON.stringify({...first, blob: null})
+
+    elem.setAttribute("custom", first.id)
     elem.play()
 }
 
@@ -46,19 +47,27 @@ elem.onplay = async (e: Event) => {
 }
 
 elem.onended = async () => {
-    // elem.src = await goNext(main_playlist).then(v=>v.blob).then(URL.createObjectURL)
+    const next = await seekNext(main_playlist)
+    if (next) {
+        // console.log("LOADED", next)
+        elem.src = URL.createObjectURL(next.blob)
+        metadata.innerHTML = JSON.stringify({...next, blob: null})
+    }
     elem.play()
 }
 
-const goNext = async (p: Playlist, n?: number): Promise<Record & {blob: Blob} | null> => {
-    if (n==3) return Promise.resolve(null)
-    console.log("retry",n)
-    const video = await p.loadNext()
-    if (video && video.blob && (video.status||true)) return video as Record & {blob: Blob}
-    else return new Promise((resolve, reject)=>{
-        setTimeout( ()=>{ resolve(goNext(p, n===undefined?0:++n)) }, 500 )
+const seekNext = async (p: Playlist, n?: number): Promise<Record & {blob: Blob} | null> => {
+    if (n==10) return Promise.resolve(null)
+    if (n && n>0) console.log("seeking retry",n)
+    return p.loadNext( n===undefined ? 0 : n )
+    .then( video => {
+        if (video && video.blob && (video.status||true)) return video as Record & {blob: Blob}
+        else return new Promise((resolve, reject)=>{
+            setTimeout( ()=>{ resolve(seekNext(p, n===undefined?0:++n)) }, 500 )
+        })
     })
 }
 
 
 window.document.body.appendChild(elem)
+window.document.body.appendChild(metadata)
