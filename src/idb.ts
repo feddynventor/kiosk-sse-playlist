@@ -6,7 +6,8 @@ interface Idb {
   loadNext: (sequence?: number) => Promise<Record | null>
   getCurrent: () => Promise<Record | null>
   list: () => Promise<Record[]>
-  updateStatus: (id: string, status: boolean) => Promise<Record | null>
+  update: (obj: Record) => Promise<void>
+  updateSequence: (id: string, sequence: number) => Promise<Record | null>
 }
 
 export interface Record {
@@ -14,7 +15,9 @@ export interface Record {
   url: string
   title: string
   subtitle: string
-  blob?: Blob
+  heading: string
+  date: Date
+  blob: Blob
   status: boolean
   sequence: number
 }
@@ -58,22 +61,24 @@ export class Playlist implements Idb {
       
       // new obj must contain these fields
       objectStore.createIndex("id_idx", "id", { unique: true });
-      objectStore.createIndex("sequence_idx", "sequence", { unique: true });
+      objectStore.createIndex("sequence_idx", "sequence", { unique: false });
+      //TODO: on update sequence number, uniqueness would be broken, no indexing
 
       console.log('Database setup complete');
     };
   }
 
   async cache( obj: Record & {sequence?:number} ): Promise<void> {
+    if (!obj.url) return  // nothing to cache
     return fetch(obj.url, {mode: "cors"})
     .then(response => response.status==200 ? response.blob() : Promise.reject("Not found"))
     .then( async blob => {
       if (!this.dbInstance) return Promise.reject('Database not initialized');
       const objectStore = this.dbInstance.transaction(this.dbOSName, 'readwrite').objectStore(this.dbOSName);
       // Add the record to IDB
-      const request = objectStore.add({
+      const request = objectStore.put({
         ...obj,
-        status: obj.status || false,
+        status: obj.sequence ? obj.status || false : false,  //if seq or status is missing, disable element by def
         sequence: obj.sequence, // if undefined, it wont be showed upon `sequence` update
         blob
       });
@@ -92,6 +97,27 @@ export class Playlist implements Idb {
         }
       }
     })
+  }
+
+  async update(obj: Record): Promise<void> {
+    if (!this.dbInstance) return Promise.reject('Database not initialized');
+    const objectStore = this.dbInstance.transaction(this.dbOSName, 'readwrite').objectStore(this.dbOSName);
+    // Add the record to IDB
+    const request = objectStore.put(obj);
+
+    request.onsuccess = (e) => {
+      console.log(`Updated ID:${obj.id} SEQ:${obj.sequence}`)
+      return Promise.resolve()
+    }
+    request.onerror = (e) => {
+      if ((e.target as IDBRequest).error?.code == 0) {
+        console.log(`Already Cached ID:${obj.id} SEQ:${obj.sequence}`)
+        return Promise.resolve()
+      } else {
+        console.error('Error', e)
+        return Promise.reject()
+      }
+    }
   }
 
   async get(id: string): Promise<Record | null> {
@@ -116,7 +142,7 @@ export class Playlist implements Idb {
   }
 
   async loadNext(sequence?: number): Promise<Record | null> {
-    if (!this.dbInstance) return Promise.resolve(null)
+    if (!this.dbInstance) return Promise.reject()
     // Get by sequence number
     return this.list()
     .then( playlist => {
@@ -157,32 +183,6 @@ export class Playlist implements Idb {
     });
   }
 
-  async updateStatus(id: string, status: boolean): Promise<Record | null> {
-    if (!this.dbInstance) return Promise.reject('Database not initialized');
-    const objectStore = this.dbInstance.transaction(this.dbOSName, 'readwrite').objectStore(this.dbOSName);
-    // Update status for selected record
-    const request = objectStore.openCursor( IDBKeyRange.only(id) )
-
-    return new Promise((resolve, reject) => {
-      request.onsuccess = () => {
-        if (!request.result) return resolve(null)
-
-        const cursor = request.result
-        const obj = request.result?.value as Record
-        const updateRequest = cursor.update({
-          ...obj,
-          status
-        })
-        updateRequest.onsuccess = () => {
-          return resolve(obj)
-        }
-      }
-      request.onerror = reject
-
-    })
-
-  }
-
   async updateSequence(id: string, sequence: number): Promise<Record | null> {
     if (!this.dbInstance) return Promise.reject('Database not initialized');
     const objectStore = this.dbInstance.transaction(this.dbOSName, 'readwrite').objectStore(this.dbOSName);
@@ -193,34 +193,21 @@ export class Playlist implements Idb {
       request.onsuccess = () => {
         if (!request.result) return resolve(null)
 
-        const cursor = request.result
+        const cursor = request.result as IDBCursor
         const obj = request.result?.value as Record
         const updateRequest = cursor.update({
           ...obj,
           status: true,
           sequence
         })
+        cursor.continue()
         updateRequest.onsuccess = () => {
           return resolve(obj)
         }
       }
-      request.onerror = reject
+      request.onerror = (e)=>{console.log(e)}
 
     })
 
-  }
-
-  async totalItems(): Promise<number> {
-    if (!this.dbInstance) return Promise.reject('Database not initialized');
-    const objectStore = this.dbInstance.transaction(this.dbOSName, 'readwrite').objectStore(this.dbOSName);
-    // API count records
-    const countRequest = objectStore.count();
-    
-    return new Promise((resolve, reject) => {
-      countRequest.onsuccess = () => {
-        resolve(countRequest.result)
-      }
-      countRequest.onerror = reject
-    })
   }
 }

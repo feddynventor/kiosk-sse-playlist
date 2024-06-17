@@ -1,20 +1,10 @@
 import { Playlist, Record } from './idb.js';
-import { APIRecord, totalFetch } from './api.js';
+import { APIRecord, sortedList, totalFetch } from './api.js';
 import { UpdateEvent, insert, update } from './event.js';
-
-const main_playlist = new Playlist('videos')
 
 interface CMSEvent {
     type: "update"|"delete"|"insert",
     payload: UpdateEvent | APIRecord
-}
-
-const events = new EventSource('http://192.168.0.238:8989/events', { withCredentials: true })
-events.onmessage = (ev: MessageEvent) => {
-    const event = JSON.parse(ev.data as string) as CMSEvent
-    console.log("SSE", event)
-    if (event.type == "update") return update(main_playlist, event.payload as UpdateEvent)
-    if (event.type == "insert") return insert(main_playlist, event.payload as APIRecord)
 }
 
 const elem = document.createElement('video');
@@ -22,54 +12,68 @@ const metadata = document.createElement('h4')
 elem.autoplay = true;
 elem.controls = true;
 
-window.onload = async () => {
-    let first = await seekNext(main_playlist)
-    console.log('onload', first)
-    if (!first) first = await Promise
-        .all( (await totalFetch())
-            .map(function(v: Record, i: number) {  //arrow function cancels bindings
-                return main_playlist.cache({...v, sequence: i})  //override sequence number with one from server
-            })
-        )
-        .then( function() {
-            return seekNext(main_playlist, 0)
+const events = new EventSource('http://192.168.0.238:8989/events', { withCredentials: true })
+events.onmessage = (ev: MessageEvent) => {
+    const event = JSON.parse(ev.data as string) as CMSEvent
+    console.log("SSE", event)
+    if (event.type == "update")
+        return update(main_playlist, event.payload as UpdateEvent)
+    if (event.type == "insert") 
+        return insert(main_playlist, event.payload as APIRecord)
+        .then( (sorted: (Record|null)[]) => {
+            if (elem.paused && sorted[0] && sorted[0].blob) elem.src = URL.createObjectURL(sorted[0].blob)
         })
-
-    if (!first) return
-    
-    elem.src = URL.createObjectURL(first.blob)
-    metadata.innerHTML = JSON.stringify({...first, blob: null})
-
-    elem.setAttribute("custom", first.id)
-    elem.play()
 }
+
+const db_onload = async () => {
+    const first = await main_playlist.loadNext(0)
+    if (!!first) {
+        metadata.innerHTML = JSON.stringify({...first, blob: null})
+        elem.src = URL.createObjectURL(first.blob)
+        elem.play()
+    }
+
+    // sync with backend DB, calculating the elements differences
+    loadNew()
+    .then( v => Promise.allSettled(v.map(function(v: Record) {  //arrow function cancels bindings
+        return main_playlist.cache(v)
+    })) )
+    .then( sortedList )  // from cloud api
+    .then( playlist => Promise.race(playlist.map( (v,i) => main_playlist.updateSequence(v.id, i+1) )) )  //seq minimo =1
+    .then( async function() {
+        if (!elem.paused) return;
+        // else is blocked
+        const first = await main_playlist.loadNext(0)
+        if (!first) return
+        metadata.innerHTML = JSON.stringify({...first, blob: null})
+        elem.src = URL.createObjectURL(first.blob)
+        elem.play()
+    })
+}
+
+const main_playlist = new Playlist('videos', db_onload)
 
 elem.onplay = async (e: Event) => {
     console.log("STARTED", await main_playlist.getCurrent())
 }
 
 elem.onended = async () => {
-    const next = await seekNext(main_playlist)
+    const next = await main_playlist.loadNext()
     if (next) {
-        // console.log("LOADED", next)
         elem.src = URL.createObjectURL(next.blob)
         metadata.innerHTML = JSON.stringify({...next, blob: null})
     }
     elem.play()
 }
 
-const seekNext = async (p: Playlist, n?: number): Promise<Record & {blob: Blob} | null> => {
-    if (n==10) return Promise.resolve(null)
-    if (n && n>0) console.log("seeking retry",n)
-    return p.loadNext( n===undefined ? 0 : n )
-    .then( video => {
-        if (!!video && !!video.blob && video.status==true && video.sequence!==undefined) return video as Record & {blob: Blob}
-        else return new Promise((resolve, reject)=>{
-            setTimeout( ()=>{ resolve(seekNext(p, n===undefined?0:++n)) }, 500 )
-        })
-    })
-}
-
-
 window.document.body.appendChild(elem)
 window.document.body.appendChild(metadata)
+
+const loadNew = async () => {
+    const cloud = await totalFetch() as Record[]
+    const local = (await main_playlist.list()).map( v => v.id ) as string[]
+
+    const c = cloud.filter( v => !local.includes( v.id ) )
+    console.log("FOUND NEW", c)
+    return c
+}
