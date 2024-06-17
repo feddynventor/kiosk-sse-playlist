@@ -69,13 +69,12 @@ export class Playlist implements Idb {
     .then(response => response.status==200 ? response.blob() : Promise.reject("Not found"))
     .then( async blob => {
       if (!this.dbInstance) return Promise.reject('Database not initialized');
-      const totalItems = await this.totalItems()
       const objectStore = this.dbInstance.transaction(this.dbOSName, 'readwrite').objectStore(this.dbOSName);
       // Add the record to IDB
       const request = objectStore.add({
         ...obj,
         status: obj.status || false,
-        sequence: obj.sequence || totalItems,
+        sequence: obj.sequence, // if undefined, it wont be showed upon `sequence` update
         blob
       });
 
@@ -120,10 +119,12 @@ export class Playlist implements Idb {
     if (!this.dbInstance) return Promise.resolve(null)
     // Get by sequence number
     return this.list()
-    .then( v => {
-      console.log("Loading next at", this.sequence)
-      const el = v[sequence || this.sequence]
-      if (!!!sequence && el !== null) this.sequence==v.length ? this.sequence=0 : this.sequence++
+    .then( playlist => {
+      if (playlist.length == 0) return null
+      if (playlist.filter( v => v.sequence!==undefined ).at(-1)?.sequence == this.sequence) this.sequence=0
+      console.log("Loading next after current sequence number", this.sequence)
+      const el = playlist.filter(v => v.sequence > (sequence ? sequence : this.sequence))[0]
+      if (!!!sequence && el !== null) this.sequence=el.sequence
       return el
     })
   }
@@ -131,9 +132,9 @@ export class Playlist implements Idb {
   async getCurrent(): Promise<Record | null> {
     // Get by sequence number
     return this.list()
-    .then( v => {
-      console.log("Currently at index", this.sequence-1)
-      return v[this.sequence-1]
+    .then( playlist => {
+      console.log("Currently at index", this.sequence)
+      return playlist.filter(v => v.sequence == this.sequence)[0]
     })
     .catch( ()=>Promise.resolve(null) )
   }
@@ -171,6 +172,33 @@ export class Playlist implements Idb {
         const updateRequest = cursor.update({
           ...obj,
           status
+        })
+        updateRequest.onsuccess = () => {
+          return resolve(obj)
+        }
+      }
+      request.onerror = reject
+
+    })
+
+  }
+
+  async updateSequence(id: string, sequence: number): Promise<Record | null> {
+    if (!this.dbInstance) return Promise.reject('Database not initialized');
+    const objectStore = this.dbInstance.transaction(this.dbOSName, 'readwrite').objectStore(this.dbOSName);
+    // Update sequence number for selected record
+    const request = objectStore.openCursor( IDBKeyRange.only(id) )
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => {
+        if (!request.result) return resolve(null)
+
+        const cursor = request.result
+        const obj = request.result?.value as Record
+        const updateRequest = cursor.update({
+          ...obj,
+          status: true,
+          sequence
         })
         updateRequest.onsuccess = () => {
           return resolve(obj)

@@ -1,18 +1,20 @@
 import { Playlist, Record } from './idb.js';
-import { totalFetch } from './api.js';
-import { UpdateEvent, update } from './event.js';
+import { APIRecord, totalFetch } from './api.js';
+import { UpdateEvent, insert, update } from './event.js';
 
 const main_playlist = new Playlist('videos')
 
 interface CMSEvent {
     type: "update"|"delete"|"insert",
-    payload: UpdateEvent
+    payload: UpdateEvent | APIRecord
 }
 
 const events = new EventSource('http://192.168.0.238:8989/events', { withCredentials: true })
 events.onmessage = (ev: MessageEvent) => {
     const event = JSON.parse(ev.data as string) as CMSEvent
-    if (event.type == "update") return update(event.payload)
+    console.log("SSE", event)
+    if (event.type == "update") return update(main_playlist, event.payload as UpdateEvent)
+    if (event.type == "insert") return insert(main_playlist, event.payload as APIRecord)
 }
 
 const elem = document.createElement('video');
@@ -61,7 +63,7 @@ const seekNext = async (p: Playlist, n?: number): Promise<Record & {blob: Blob} 
     if (n && n>0) console.log("seeking retry",n)
     return p.loadNext( n===undefined ? 0 : n )
     .then( video => {
-        if (video && video.blob && (video.status||true)) return video as Record & {blob: Blob}
+        if (!!video && !!video.blob && video.status==true && video.sequence!==undefined) return video as Record & {blob: Blob}
         else return new Promise((resolve, reject)=>{
             setTimeout( ()=>{ resolve(seekNext(p, n===undefined?0:++n)) }, 500 )
         })
