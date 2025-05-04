@@ -6,7 +6,8 @@ export interface Idb {
   list: () => Promise<Record[]>
   loadNext: (sequence?: number) => Promise<Record | null>
   getNext: (sequence?: number) => Promise<Record | null>
-  update: (obj: Record) => Promise<void>
+  update: (obj: Record | FetchedRecord) => Promise<Record | FetchedRecord>
+  checkBlob: (record: FetchedRecord | null) => Promise<FetchedRecord>
   updateSequence: (sortedList: Record[]) => Promise<void>
 }
 
@@ -25,7 +26,8 @@ export interface Record {
 }
 
 export interface FetchedRecord extends Record {
-  blobURL: string
+  blobURL: string,
+  blob: Blob
 }
 
 declare global {
@@ -46,7 +48,7 @@ export class Playlist implements Idb {
   current: Record | null;
   logging: boolean;
 
-  constructor(name: string, contentType: string, callback?: Function, logging?: boolean) {
+  constructor(name: string, contentType: string, oninit?: Function, logging?: boolean) {
     this.dbOSName = name;
     this.dbInstance = null;
     this.contentType = contentType;
@@ -60,7 +62,7 @@ export class Playlist implements Idb {
       this.logger('Database opened successfully', request.result);
       this.dbInstance = request.result;
 
-      if (callback) callback()
+      if (oninit) oninit()
     };
 
     request.onupgradeneeded = (e: Event) => {
@@ -82,10 +84,15 @@ export class Playlist implements Idb {
     if (this.logging) console.log(this.dbOSName, new Date().toISOString().slice(11,23), ...args)
   }
 
+  /**
+   * downloads the resource and stores a NEW Record in the DB
+   * if id already exists, no update is operated
+   * errors if download fails
+   */
   async cache( obj: Record ): Promise<void> {
     if (!obj.url) return  // nothing to cache
     return fetch(obj.url, {mode: "cors"})
-    .then(response => response.status==200 ? response.blob() : Promise.reject("Not found"))
+    .then(response => response.status==200 ? response.blob() : Promise.reject(response))
     .then( async blob => {
       if (!this.dbInstance) return Promise.reject('Database not initialized');
       const objectStore = this.dbInstance.transaction(this.dbOSName, 'readwrite').objectStore(this.dbOSName);
@@ -94,26 +101,28 @@ export class Playlist implements Idb {
         ...obj,
         status: obj.sequence!==undefined ? obj.status : false,  //if seq or status is missing, disable element by def
         sequence: obj.sequence,
-        blobURL: URL.createObjectURL(blob)
+        blobURL: URL.createObjectURL(blob),
+        blob
       });
 
       request.onsuccess = (e) => {
         this.logger(`POST New Cached ID:${obj.id}`)
-        return true
       }
       request.onerror = (e) => {
         if ((e.target as IDBRequest).error?.code == 0) {
           this.logger(`Already Cached ID:${obj.id}`)
-          return true
         } else {
           console.error('Error', e)
-          return false
         }
       }
     })
   }
 
-  async update(obj: Record): Promise<void> {
+  /**
+   * updates a Record by overwriting partial properties
+   * returns the GET Result from the DB
+   */
+  async update(obj: Record | FetchedRecord): Promise<Record | FetchedRecord> {
     if (!this.dbInstance) return Promise.reject('Database not initialized');
     const objectStore = this.dbInstance.transaction(this.dbOSName, 'readwrite').objectStore(this.dbOSName);
     this.logger("UPDATE",obj.id)
@@ -128,16 +137,20 @@ export class Playlist implements Idb {
         const record = request.result?.value as Record
         this.logger("UPDATE ok",obj.id,{...record,...obj})
         const updateRequest = cursor.update({...record,...obj})
-        cursor.continue()
         updateRequest.onsuccess = () => {
-          return resolve()
+          return resolve(this.get(obj.id).then(a => a as FetchedRecord))
         }
       }
-      request.onerror = this.logger
+
+      request.onerror = reject
 
     })
   }
 
+  /**
+   * gets Record by indexed ID
+   * resolves null if not found
+   */
   async get(id: string): Promise<Record | null> {
     if (!this.dbInstance) return Promise.resolve(null)
     const objectStore = this.dbInstance.transaction(this.dbOSName).objectStore(this.dbOSName);
@@ -159,21 +172,26 @@ export class Playlist implements Idb {
     });
   }
 
+  /**
+   * type guard for just checking if the fetch had happened
+   */
   private isFetched(record: Record): record is FetchedRecord {
     return (record as FetchedRecord).blobURL !== undefined
   }
 
-  async getNext(sequence?: number): Promise<FetchedRecord | null> {
+  /**
+   * returns the playable Record (fetched) with the next sequence number to the current one
+   */
+  async getNext(sequence?: number): Promise<FetchedRecord> {
     if (!this.dbInstance) return Promise.reject()
     // Get played by current ID (with updated sequence number)
-    this.logger("GET NEXT requested")
     const current = await this.getCurrent()
-    this.logger("GET NEXT from", current?.id || this.current?.sequence || sequence, "is updated", !!current?.db)
+    this.logger("GET NEXT from", current?.id || this.current?.sequence || sequence, "was", !!current?.db ? "up to date": "outdated", "with DB")
     // Get by sequence number
     return this.list( v => this.isFetched(v) && v.sequence!==undefined && v.status==true && v.expiry>=new Date() && v.date<=new Date() && v.id!==current?.id )  //last check triggers also with `no current`
     .then( playlist => {
       // empty
-      if (playlist.length == 0) return null
+      if (playlist.length == 0) return Promise.reject()
       // find next -- il primo con SEQ maggiore del corrente
       const last = playlist.at(-1)
       const next: Record = playlist.filter(v => // priorità di condizioni
@@ -187,22 +205,76 @@ export class Playlist implements Idb {
             ? v.sequence! > this.current.sequence
         : v.sequence! >= 0  // panic -- riprendi da inizio
       )[0]
-      this.logger("GET NEXT returned", next.id, "sequence", next.sequence, !!!current?"current was missing":null)
+      this.logger("GET NEXT returned", next.id, "sequence", next.sequence)
       return Promise.resolve(next as FetchedRecord)  // TODO: Promise.race is not triggered with only the `return value` statement
     })
   }
 
+  /**
+   * takes the next Record in sequence
+   * and actually commits the `current` property
+   * plus checks the Blob validity for reliable playback
+   */
   async loadNext(sequence?: number): Promise<FetchedRecord | null> {
     this.logger("LOAD NEXT from", this.current?.sequence || sequence)
     return this
     .getNext(sequence)
+    .then( this.checkBlob.bind(this) )
     .then( next => {
-      this.logger("LOAD NEXT seeked to", next?.sequence)
-      if (next !== null) this.current=next
+      this.current = next
+      this.logger("LOAD NEXT seeked to", next?.sequence, next)
       return next
     })
   }
 
+  /**
+   * attempts a request to the blob storage
+   * creates a new valid blob url otherwise
+   */
+  async checkBlob(record: FetchedRecord | null): Promise<FetchedRecord> {
+    if (record == null) return Promise.reject()
+    
+    // Use XHR to check if the blobURL exists (using GET instead of HEAD for blob URLs)
+    const blobExists = await new Promise(resolve => {
+      const xhr = new XMLHttpRequest()
+      
+      xhr.onerror = () => {
+        // This will catch net::ERR_FILE_NOT_FOUND
+        resolve(false)
+      }
+      
+      xhr.open('GET', record.blobURL)
+      xhr.responseType = 'blob'
+      xhr.setRequestHeader('Range', 'bytes=0-0')
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState === 2) {
+          // Blob exists and is accessible
+          resolve(true)
+          xhr.abort();
+        }
+      }
+      xhr.send()
+    })
+
+    if (!blobExists) {
+      // Blob URL is invalid, check if we have the blob content
+      if (record.blob) {
+        this.logger("CHECK BLOB recreating blobURL from existing blob", record?.id)
+        return this.update({
+          ...record,
+          blobURL: URL.createObjectURL(record.blob)
+        }) as Promise<FetchedRecord>
+      }
+    }
+
+    this.logger("CHECK BLOB from blobStorage", record?.id)
+    return Promise.resolve(record)
+  }
+
+  /**
+   * assures the updated `current` Record is returned
+   * guarantees consistency if it had updated properties
+   */
   async getCurrent(timeout?: number): Promise<Record & {sequence: number, db?: boolean} | null> {
     // Get updated record by ID
     if (!this.current) return null
@@ -223,6 +295,10 @@ export class Playlist implements Idb {
       // if current has been just removed, return the committed data either way
   }
 
+  /** 
+   * should apply the same filter of the getNext
+   * checking if the next is the last in the roll
+   */
   async isLast(record: Record): Promise<boolean> {
     return this
     .list( v => v.sequence!==undefined && v.status==true && v.expiry>=new Date() && v.date<=new Date() )
@@ -233,6 +309,9 @@ export class Playlist implements Idb {
     } )
   }
 
+  /**
+   * lists all Record items, with optional filter function
+   */
   async list( filterfn?: (v:Record)=>boolean ): Promise<(Record | FetchedRecord)[]> {
     if (!this.dbInstance) return Promise.reject()
     const objectStore = this.dbInstance.transaction(this.dbOSName).objectStore(this.dbOSName);
