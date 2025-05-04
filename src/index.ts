@@ -1,6 +1,23 @@
-import { Playlist, Record } from './idb.js';
-import { APIRecord, sortedList, totalFetch } from './api.js';
-import { UpdateEvent, insert, update } from './event.js';
+/**
+ * UI Declarations
+ */
+
+const video = document.createElement('video');
+video.setAttribute("type", "video/mp4")
+video.autoplay = true;
+video.controls = true;
+video.muted = true;
+
+const video_metadata: {
+    title: HTMLElement,
+    subtitle: HTMLElement
+} = {
+    title: document.querySelector("#video_title") || document.createElement("p"),
+    subtitle: document.querySelector("#video_subtitle") || document.createElement("p"),
+}
+
+window.document.body.appendChild(video)
+
 
 interface CMSEvent {
     type: "update"|"delete"|"insert",
